@@ -59,7 +59,14 @@ db.run(`
 //insertar datos iniciales de cargos y aspirantes
 function crearDatosIniciales() {
   db.get("SELECT COUNT(*) AS total FROM cargos", (err, row) => {
-    if (row.total > 0) return; //si ya existen no repetir
+  if (err || !row) {
+    console.log("Error verificando cargos o BD aún no lista. Intentando igual...");
+  }
+
+  if (row && row.total > 0) {
+    console.log("Cargos ya existen, no se insertan otra vez.");
+    return;
+  }
 
     const cargos = ["Presidente", "Vicepresidente", "Secretario(a)"];
     const opciones = ["Candidato 1", "Candidato 2", "Candidato 3", "Ninguno", "No se"];
@@ -171,4 +178,5 @@ app.get("/", (req, res) => {
 app.listen(PORT, () =>
   console.log("Servidor en http://localhost:" + PORT)
 );
+
 
