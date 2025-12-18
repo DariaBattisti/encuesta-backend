@@ -1,7 +1,7 @@
-// librerias y configuracion
 const express = require("express");
 const cors = require("cors");
 const sqlite3 = require("sqlite3").verbose();
+const sgMail = require("@sendgrid/mail");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -10,10 +10,32 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// BD
+// sendgrid
+if (!process.env.SENDGRID_API_KEY) {
+  console.log("FALTA SENDGRID_API_KEY en variables de entorno");
+} else {
+  sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+}
+
+async function enviarCorreoVotacion(correo, link) {
+  if (!process.env.SENDGRID_API_KEY) throw new Error("SENDGRID_API_KEY no configurada");
+  if (!process.env.SENDGRID_FROM) throw new Error("SENDGRID_FROM no configurado");
+
+  const msg = {
+    to: correo,
+    from: process.env.SENDGRID_FROM, 
+    subject: "Enlace de votacion",
+    text: `Tu enlace de votacion: ${link}`,
+    html: `<h3>Encuesta</h3><p>Haz clic para votar:</p><a href="${link}">${link}</a>`,
+  };
+
+  await sgMail.send(msg);
+}
+
+// bd SQLite
 const db = new sqlite3.Database("encuesta.db");
 
-// usamos serialize para que todo se ejecute en orden
+// serialize para que todo se ejecute en orden
 db.serialize(() => {
   // tabla de participantes
   db.run(`
@@ -25,11 +47,11 @@ db.serialize(() => {
       edad INTEGER,
       genero TEXT,
       sector TEXT,
-      yaVoto INTEGER DEFAULT 0  -- 0=no ha votado, 1=ya votó
+      yaVoto INTEGER DEFAULT 0
     )
   `);
 
-  //tabla de cargos (Presidente, etc.)
+  // tabla de cargos
   db.run(`
     CREATE TABLE IF NOT EXISTS cargos (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,7 +59,7 @@ db.serialize(() => {
     )
   `);
 
-  //opciones para votar en cada cargo
+  // aspirantes por cargo
   db.run(`
     CREATE TABLE IF NOT EXISTS aspirantes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,7 +68,7 @@ db.serialize(() => {
     )
   `);
 
-  // tabla donde guardamos los votos
+  // tabla de votos
   db.run(
     `
     CREATE TABLE IF NOT EXISTS votos (
@@ -61,23 +83,20 @@ db.serialize(() => {
       if (err) {
         console.log("Error creando tabla votos:", err.message);
       } else {
-        // cuando ya existen TODAS las tablas insertamos los datos iniciales
         crearDatosIniciales();
       }
     }
   );
 });
 
-//datos iniciales: cargos y aspirantes
+// datos iniciales: cargos y aspirantes
 function crearDatosIniciales() {
-  // revisamos si ya hay cargos
   db.get("SELECT COUNT(*) AS total FROM cargos", (err, row) => {
     if (err) {
       console.log("Error verificando cargos:", err.message);
       return;
     }
 
-    // si ya hay no volvemos a insertar
     if (row && row.total > 0) {
       console.log("Cargos ya existen, no se insertan otra vez.");
       return;
@@ -90,7 +109,6 @@ function crearDatosIniciales() {
 
     db.serialize(() => {
       cargos.forEach((cargoNombre) => {
-        // insertamos el cargo
         db.run("INSERT INTO cargos(nombre) VALUES(?)", [cargoNombre], function (err2) {
           if (err2) {
             console.log("Error insertando cargo:", err2.message);
@@ -99,15 +117,12 @@ function crearDatosIniciales() {
 
           const idCargo = this.lastID;
 
-          // insertamos las 5 opciones para el cargo
           opciones.forEach((opcion) => {
             db.run(
               "INSERT INTO aspirantes(idCargo, nombre) VALUES(?, ?)",
               [idCargo, opcion],
               (err3) => {
-                if (err3) {
-                  console.log("Error insertando aspirante:", err3.message);
-                }
+                if (err3) console.log("Error insertando aspirante:", err3.message);
               }
             );
           });
@@ -117,8 +132,8 @@ function crearDatosIniciales() {
   });
 }
 
-//registro y listado de participantes
-//registrar participante
+// api
+// registrar participante + enviar correo con link
 app.post("/api/participantes", (req, res) => {
   const { correo, nombre, apellido, edad, genero, sector } = req.body;
 
@@ -127,17 +142,32 @@ app.post("/api/participantes", (req, res) => {
   db.run(
     "INSERT INTO participantes(correo,nombre,apellido,edad,genero,sector) VALUES(?,?,?,?,?,?)",
     [correo, nombre, apellido, edad, genero, sector],
-    function (err) {
+    async function (err) {
       if (err) {
         console.log("Error insertando participante:", err.message);
         return res.json({ error: "No se pudo registrar (correo puede estar repetido)." });
       }
-      res.json({ id: this.lastID, correo });
+
+      const baseFront = process.env.FRONTEND_URL || "http://localhost:5500";
+      const linkVotacion = `${baseFront}/votar.html?correo=${encodeURIComponent(correo)}`;
+
+      try {
+        await enviarCorreoVotacion(correo, linkVotacion);
+      } catch (e) {
+        console.log("Error enviando correo:", e?.response?.body || e.message);
+        return res.json({
+          id: this.lastID,
+          correo,
+          warning: "Registrado, pero no se pudo enviar el correo",
+        });
+      }
+
+      res.json({ id: this.lastID, correo, mensaje: "Registrado y correo enviado" });
     }
   );
 });
 
-//ver participantes
+// ver participantes
 app.get("/api/participantes", (req, res) => {
   db.all("SELECT * FROM participantes", (err, filas) => {
     if (err) {
@@ -148,7 +178,7 @@ app.get("/api/participantes", (req, res) => {
   });
 });
 
-//validar voto por correo
+// validar voto por correo
 app.get("/api/participantePorCorreo", (req, res) => {
   const correo = req.query.correo;
 
@@ -165,7 +195,7 @@ app.get("/api/participantePorCorreo", (req, res) => {
   });
 });
 
-//mostrar cargos con sus aspirantes
+// mostrar cargos con aspirantes
 app.get("/api/cargosConAspirantes", (req, res) => {
   db.all("SELECT * FROM cargos", (err, cargos) => {
     if (err) {
@@ -179,7 +209,6 @@ app.get("/api/cargosConAspirantes", (req, res) => {
         return res.json([]);
       }
 
-      //combinar cargos con sus aspirantes
       const resultado = cargos.map((c) => ({
         idCargo: c.id,
         nombre: c.nombre,
@@ -199,7 +228,6 @@ app.post("/api/votar", (req, res) => {
     return res.json({ error: "Correo y votos son obligatorios" });
   }
 
-  //verificar que exista el correo
   db.get("SELECT * FROM participantes WHERE correo=?", [correo], (err, p) => {
     if (err) {
       console.log("Error buscando participante:", err.message);
@@ -217,14 +245,11 @@ app.post("/api/votar", (req, res) => {
           "INSERT INTO votos(idParticipante,idCargo,idAspirante,fecha) VALUES(?,?,?,?)",
           [p.id, v.idCargo, v.idAspirante, fecha],
           (err2) => {
-            if (err2) {
-              console.log("Error insertando voto:", err2.message);
-            }
+            if (err2) console.log("Error insertando voto:", err2.message);
           }
         );
       });
 
-      // marcar que ya votó
       db.run("UPDATE participantes SET yaVoto=1 WHERE id=?", [p.id]);
     });
 
@@ -232,7 +257,7 @@ app.post("/api/votar", (req, res) => {
   });
 });
 
-// resultados de la votación
+// resultados
 app.get("/api/resultados", (req, res) => {
   const sql = `
     SELECT 
@@ -263,5 +288,3 @@ app.get("/", (req, res) => {
 app.listen(PORT, () => {
   console.log("Servidor en http://localhost:" + PORT);
 });
-
-
