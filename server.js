@@ -320,7 +320,37 @@ app.get("/api/resultados", (req, res) => {
   });
 });
 
+async function cargarResultados() {
+  const div = document.getElementById("resultados");
+  div.textContent = "Cargando resultados...";
+
+  try {
+    const resp = await fetch(API_BASE + "/api/resultados");
+    const data = await resp.json();
+
+    if (!Array.isArray(data) || data.length === 0) {
+      div.textContent = "No hay resultados disponibles.";
+      return;
+    }
+
+    div.innerHTML = "";
+
+    data.forEach((r) => {
+      const fila = document.createElement("div");
+      fila.textContent = `${r.cargo} - ${r.aspirante}: ${r.votos} votos`;
+      div.appendChild(fila);
+    });
+  } catch (err) {
+    console.error(err);
+    div.textContent = "Error al cargar resultados.";
+  }
+}
+
+// cargar resultados al abrir la pagina
+window.addEventListener("DOMContentLoaded", cargarResultados);
+
 // iniciar el servidor
 app.listen(PORT, () => {
   console.log("Servidor iniciado en puerto", PORT);
 });
+
