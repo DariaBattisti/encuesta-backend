@@ -153,7 +153,7 @@ app.get("/api/test-email", async (req, res) => {
 
   try {
     await enviarCorreoVotacion(to, link);
-    res.json({ ok: true, mensaje: "SendGrid acepto el envio (mira logs)" });
+    res.json({ ok: true, mensaje: "SendGrid acepto el envio" });
   } catch (e) {
     console.log("Error /api/test-email:", e.message);
     res.json({ ok: false, error: e.message });
@@ -353,4 +353,3 @@ window.addEventListener("DOMContentLoaded", cargarResultados);
 app.listen(PORT, () => {
   console.log("Servidor iniciado en puerto", PORT);
 });
-
