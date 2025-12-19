@@ -1,7 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const sqlite3 = require("sqlite3").verbose();
-const sgMail = require("@sendgrid/mail");
+const nodemailer = require("nodemailer");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -10,34 +10,44 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// sendgrid
-if (!process.env.SENDGRID_API_KEY) {
-  console.log("FALTA SENDGRID_API_KEY en variables de entorno");
-} else {
-  sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+// correo con nodemailer y gmail
+function validarCorreoConfig() {
+  if (!process.env.GMAIL_USER) {
+    console.log("FALTA GMAIL_USER en variables de entorno");
+    return false;
+  }
+  if (!process.env.GMAIL_APP_PASSWORD) {
+    console.log("FALTA GMAIL_APP_PASSWORD en variables de entorno");
+    return false;
+  }
+  return true;
 }
 
-async function enviarCorreoVotacion(correo, link) {
-  if (!process.env.SENDGRID_API_KEY) throw new Error("SENDGRID_API_KEY no configurada");
-  if (!process.env.SENDGRID_FROM) throw new Error("SENDGRID_FROM no configurado");
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.GMAIL_USER,
+    pass: process.env.GMAIL_APP_PASSWORD,
+  },
+});
 
-  const msg = {
+async function enviarCorreoVotacion(correo, link) {
+  if (!validarCorreoConfig()) throw new Error("Config de Gmail incompleta");
+
+  await transporter.sendMail({
+    from: `"Encuesta" <${process.env.GMAIL_USER}>`,
     to: correo,
-    from: process.env.SENDGRID_FROM, 
     subject: "Enlace de votacion",
     text: `Tu enlace de votacion: ${link}`,
     html: `<h3>Encuesta</h3><p>Haz clic para votar:</p><a href="${link}">${link}</a>`,
-  };
-
-  await sgMail.send(msg);
+  });
 }
 
-// bd SQLite
+// bd sqlite
 const db = new sqlite3.Database("encuesta.db");
 
 // serialize para que todo se ejecute en orden
 db.serialize(() => {
-  // tabla de participantes
   db.run(`
     CREATE TABLE IF NOT EXISTS participantes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,7 +61,6 @@ db.serialize(() => {
     )
   `);
 
-  // tabla de cargos
   db.run(`
     CREATE TABLE IF NOT EXISTS cargos (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,7 +68,6 @@ db.serialize(() => {
     )
   `);
 
-  // aspirantes por cargo
   db.run(`
     CREATE TABLE IF NOT EXISTS aspirantes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,7 +76,6 @@ db.serialize(() => {
     )
   `);
 
-  // tabla de votos
   db.run(
     `
     CREATE TABLE IF NOT EXISTS votos (
@@ -89,7 +96,6 @@ db.serialize(() => {
   );
 });
 
-// datos iniciales: cargos y aspirantes
 function crearDatosIniciales() {
   db.get("SELECT COUNT(*) AS total FROM cargos", (err, row) => {
     if (err) {
@@ -133,6 +139,7 @@ function crearDatosIniciales() {
 }
 
 // api
+
 // registrar participante + enviar correo con link
 app.post("/api/participantes", (req, res) => {
   const { correo, nombre, apellido, edad, genero, sector } = req.body;
@@ -142,13 +149,12 @@ app.post("/api/participantes", (req, res) => {
   const baseFront = process.env.FRONTEND_URL || "http://localhost:5500";
   const linkVotacion = `${baseFront}/votar.html?correo=${encodeURIComponent(correo)}`;
 
-  // intentar insertar
   db.run(
     "INSERT INTO participantes(correo,nombre,apellido,edad,genero,sector) VALUES(?,?,?,?,?,?)",
     [correo, nombre, apellido, edad, genero, sector],
     async function (err) {
       if (err) {
-        // si ya existe, busca el participante y reenvia el correo
+        // si ya existe, reenvia el correo
         if (err.message && err.message.includes("UNIQUE")) {
           db.get("SELECT id, correo FROM participantes WHERE correo=?", [correo], async (err2, p) => {
             if (err2 || !p) return res.json({ error: "No se pudo buscar el participante existente" });
@@ -156,7 +162,7 @@ app.post("/api/participantes", (req, res) => {
             try {
               await enviarCorreoVotacion(correo, linkVotacion);
             } catch (e) {
-              console.log("Error reenviando correo:", e?.response?.body || e.message);
+              console.log("Error reenviando correo:", e.message);
               return res.json({ id: p.id, correo, warning: "Ya estaba registrado, pero no se pudo enviar el correo" });
             }
 
@@ -173,7 +179,7 @@ app.post("/api/participantes", (req, res) => {
       try {
         await enviarCorreoVotacion(correo, linkVotacion);
       } catch (e) {
-        console.log("Error enviando correo:", e?.response?.body || e.message);
+        console.log("Error enviando correo:", e.message);
         return res.json({ id: this.lastID, correo, warning: "Registrado, pero no se pudo enviar el correo" });
       }
 
@@ -204,7 +210,7 @@ app.get("/api/participantePorCorreo", (req, res) => {
     }
 
     if (!p) return res.json({ permitido: false, motivo: "Correo no registrado" });
-    if (p.yaVoto == 1) return res.json({ permitido: false, motivo: "Ya votó" });
+    if (p.yaVoto == 1) return res.json({ permitido: false, motivo: "Ya voto" });
 
     res.json({ permitido: true, participante: p });
   });
@@ -250,7 +256,7 @@ app.post("/api/votar", (req, res) => {
     }
 
     if (!p) return res.json({ error: "Correo no registrado" });
-    if (p.yaVoto == 1) return res.json({ error: "Ya votó" });
+    if (p.yaVoto == 1) return res.json({ error: "Ya voto" });
 
     const fecha = new Date().toISOString();
 
@@ -301,5 +307,5 @@ app.get("/", (req, res) => {
 
 // iniciar el servidor
 app.listen(PORT, () => {
-  console.log("Servidor en http://localhost:" + PORT);
+  console.log("Servidor iniciado");
 });
