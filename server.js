@@ -139,27 +139,42 @@ app.post("/api/participantes", (req, res) => {
 
   if (!correo) return res.json({ error: "Correo obligatorio" });
 
+  const baseFront = process.env.FRONTEND_URL || "http://localhost:5500";
+  const linkVotacion = `${baseFront}/votar.html?correo=${encodeURIComponent(correo)}`;
+
+  // intentar insertar
   db.run(
     "INSERT INTO participantes(correo,nombre,apellido,edad,genero,sector) VALUES(?,?,?,?,?,?)",
     [correo, nombre, apellido, edad, genero, sector],
     async function (err) {
       if (err) {
+        // si ya existe, busca el participante y reenvia el correo
+        if (err.message && err.message.includes("UNIQUE")) {
+          db.get("SELECT id, correo FROM participantes WHERE correo=?", [correo], async (err2, p) => {
+            if (err2 || !p) return res.json({ error: "No se pudo buscar el participante existente" });
+
+            try {
+              await enviarCorreoVotacion(correo, linkVotacion);
+            } catch (e) {
+              console.log("Error reenviando correo:", e?.response?.body || e.message);
+              return res.json({ id: p.id, correo, warning: "Ya estaba registrado, pero no se pudo enviar el correo" });
+            }
+
+            return res.json({ id: p.id, correo, mensaje: "Ya estaba registrado, correo reenviado" });
+          });
+          return;
+        }
+
         console.log("Error insertando participante:", err.message);
-        return res.json({ error: "No se pudo registrar (correo puede estar repetido)." });
+        return res.json({ error: "No se pudo registrar." });
       }
 
-      const baseFront = process.env.FRONTEND_URL || "http://localhost:5500";
-      const linkVotacion = `${baseFront}/votar.html?correo=${encodeURIComponent(correo)}`;
-
+      // si inserto bien, enviar correo
       try {
         await enviarCorreoVotacion(correo, linkVotacion);
       } catch (e) {
         console.log("Error enviando correo:", e?.response?.body || e.message);
-        return res.json({
-          id: this.lastID,
-          correo,
-          warning: "Registrado, pero no se pudo enviar el correo",
-        });
+        return res.json({ id: this.lastID, correo, warning: "Registrado, pero no se pudo enviar el correo" });
       }
 
       res.json({ id: this.lastID, correo, mensaje: "Registrado y correo enviado" });
