@@ -1,7 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const sqlite3 = require("sqlite3").verbose();
-const nodemailer = require("nodemailer");
+const sgMail = require("@sendgrid/mail");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -10,43 +10,41 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// correo con nodemailer y gmail
-function validarCorreoConfig() {
-  if (!process.env.GMAIL_USER) {
-    console.log("FALTA GMAIL_USER en variables de entorno");
+// sendgrid
+function validarSendGridConfig() {
+  if (!process.env.SENDGRID_API_KEY) {
+    console.log("FALTA SENDGRID_API_KEY en variables de entorno");
     return false;
   }
-  if (!process.env.GMAIL_APP_PASSWORD) {
-    console.log("FALTA GMAIL_APP_PASSWORD en variables de entorno");
+  if (!process.env.SENDGRID_FROM) {
+    console.log("FALTA SENDGRID_FROM en variables de entorno");
     return false;
   }
   return true;
 }
 
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: {
-    user: process.env.GMAIL_USER,
-    pass: process.env.GMAIL_APP_PASSWORD,
-  },
-});
+if (process.env.SENDGRID_API_KEY) {
+  sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+}
 
 async function enviarCorreoVotacion(correo, link) {
-  if (!validarCorreoConfig()) throw new Error("Config de Gmail incompleta");
+  if (!validarSendGridConfig()) throw new Error("Config de SendGrid incompleta");
 
-  await transporter.sendMail({
-    from: `"Encuesta" <${process.env.GMAIL_USER}>`,
+  const msg = {
     to: correo,
+    from: process.env.SENDGRID_FROM, 
     subject: "Enlace de votacion",
     text: `Tu enlace de votacion: ${link}`,
     html: `<h3>Encuesta</h3><p>Haz clic para votar:</p><a href="${link}">${link}</a>`,
-  });
+  };
+
+  const resp = await sgMail.send(msg);
+  console.log("SendGrid: correo aceptado, status:", resp?.[0]?.statusCode);
 }
 
-// bd sqlite
+// bd
 const db = new sqlite3.Database("encuesta.db");
 
-// serialize para que todo se ejecute en orden
 db.serialize(() => {
   db.run(`
     CREATE TABLE IF NOT EXISTS participantes (
@@ -139,6 +137,28 @@ function crearDatosIniciales() {
 }
 
 // api
+
+// ruta raiz
+app.get("/", (req, res) => {
+  res.send("API de Encuesta funcionando...");
+});
+
+// prueba rapida de correo 
+app.get("/api/test-email", async (req, res) => {
+  const to = req.query.to;
+  if (!to) return res.json({ error: "Pasa ?to=correo@dominio.com" });
+
+  const baseFront = process.env.FRONTEND_URL || "http://localhost:5500";
+  const link = `${baseFront}/votar.html?correo=${encodeURIComponent(to)}`;
+
+  try {
+    await enviarCorreoVotacion(to, link);
+    res.json({ ok: true, mensaje: "SendGrid acepto el envio (mira logs)" });
+  } catch (e) {
+    console.log("Error /api/test-email:", e.message);
+    res.json({ ok: false, error: e.message });
+  }
+});
 
 // registrar participante + enviar correo con link
 app.post("/api/participantes", (req, res) => {
@@ -300,12 +320,7 @@ app.get("/api/resultados", (req, res) => {
   });
 });
 
-// ruta raiz
-app.get("/", (req, res) => {
-  res.send("API de Encuesta funcionando...");
-});
-
 // iniciar el servidor
 app.listen(PORT, () => {
-  console.log("Servidor iniciado");
+  console.log("Servidor iniciado en puerto", PORT);
 });
