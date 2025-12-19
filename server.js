@@ -6,7 +6,6 @@ const sgMail = require("@sendgrid/mail");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// middleware
 app.use(cors());
 app.use(express.json());
 
@@ -87,7 +86,8 @@ db.serialize(() => {
 
 function crearDatosIniciales() {
   db.get("SELECT COUNT(*) AS total FROM cargos", (err, row) => {
-    if (row.total > 0) return;
+    if (err) return;
+    if (row && row.total > 0) return;
 
     const cargos = ["Presidente", "Vicepresidente", "Secretario(a)"];
     const opciones = ["Candidato 1", "Candidato 2", "Candidato 3", "Ninguno", "No se"];
@@ -121,7 +121,7 @@ app.post("/api/participantes", (req, res) => {
     "INSERT INTO participantes(correo,nombre,apellido,edad,genero,sector) VALUES(?,?,?,?,?,?)",
     [correo, nombre, apellido, edad, genero, sector],
     async function (err) {
-      if (err && err.message.includes("UNIQUE")) {
+      if (err && err.message && err.message.includes("UNIQUE")) {
         await enviarCorreoVotacion(correo, link);
         return res.json({ mensaje: "Correo reenviado" });
       }
@@ -150,16 +150,30 @@ app.get("/api/participantePorCorreo", (req, res) => {
 });
 
 app.get("/api/cargosConAspirantes", (req, res) => {
-  db.all("SELECT * FROM cargos", (_, cargos) => {
-    db.all("SELECT * FROM aspirantes", (_, asp) => {
-      res.json(
-        cargos.map(c => ({
-          idCargo: c.id,
-          nombre: c.nombre,
-          aspirantes: asp.filter(a => a.idCargo === c.id)
-        }))
-      );
-    });
+  db.all("SELECT * FROM cargos ORDER BY id ASC", (_, cargos) => {
+    db.all(
+      `
+      SELECT * FROM aspirantes
+      ORDER BY idCargo ASC,
+      CASE nombre
+        WHEN 'Candidato 1' THEN 1
+        WHEN 'Candidato 2' THEN 2
+        WHEN 'Candidato 3' THEN 3
+        WHEN 'Ninguno' THEN 4
+        WHEN 'No se' THEN 5
+        ELSE 99
+      END
+      `,
+      (_, asp) => {
+        res.json(
+          cargos.map((c) => ({
+            idCargo: c.id,
+            nombre: c.nombre,
+            aspirantes: asp.filter((a) => a.idCargo === c.id),
+          }))
+        );
+      }
+    );
   });
 });
 
@@ -172,7 +186,7 @@ app.post("/api/votar", (req, res) => {
     (_, p) => {
       if (!p || p.yaVoto) return res.json({ error: "Voto no permitido" });
 
-      votos.forEach(v => {
+      votos.forEach((v) => {
         db.run(
           "INSERT INTO votos(idParticipante,idCargo,idAspirante,fecha) VALUES(?,?,?,?)",
           [p.id, v.idCargo, v.idAspirante, new Date().toISOString()]
@@ -186,13 +200,25 @@ app.post("/api/votar", (req, res) => {
 });
 
 app.get("/api/resultados", (req, res) => {
-  db.all(`
+  db.all(
+    `
     SELECT c.nombre cargo, a.nombre aspirante, COUNT(v.id) votos
     FROM cargos c
     LEFT JOIN aspirantes a ON a.idCargo=c.id
     LEFT JOIN votos v ON v.idAspirante=a.id
     GROUP BY c.id, a.id
-  `, (_, rows) => res.json(rows));
+    ORDER BY c.id ASC,
+      CASE a.nombre
+        WHEN 'Candidato 1' THEN 1
+        WHEN 'Candidato 2' THEN 2
+        WHEN 'Candidato 3' THEN 3
+        WHEN 'Ninguno' THEN 4
+        WHEN 'No se' THEN 5
+        ELSE 99
+      END
+    `,
+    (_, rows) => res.json(rows)
+  );
 });
 
 app.listen(PORT, () => {
